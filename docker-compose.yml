@@ -1,0 +1,216 @@
+version: "3"
+services:
+  nginx:
+    image: nginx:${NGINX_VERSION}
+    restart: always
+    ports:
+      - "${NGINX_HTTP_HOST_PORT}:80"
+      - "${NGINX_HTTPS_HOST_PORT}:443"
+    volumes:
+      - ${APP_DIR}:/var/www/html/:rw
+      - ${NGINX_CONFD_DIR}:/etc/nginx/conf.d/:rw
+      - ${NGINX_CERTS_DIR}:/etc/nginx/certs/:ro
+      - ${NGINX_CONF_FILE}:/etc/nginx/nginx.conf:ro
+      - ${NGINX_LOG_DIR}:/var/log/nginx/:rw
+    depends_on:
+      - php-swoole
+    networks:
+      - default
+
+  php-swoole:
+    image: qiuapeng921/php-swoole:latest
+    restart: always
+    ports:
+      - "9500:9500"
+      - "9501:9501"
+    tty: true # 如果不启动服务，需要打开这个让镜像启动
+    volumes:
+      - ${APP_DIR}:/var/www/html/:rw
+      - ${PHP_CONF_FILE}:/usr/local/etc/php/php.ini:ro
+      - ${PHP_FPM_CONF_FILE}:/usr/local/etc/php-fpm.d/www.conf:rw
+      - ./conf/php/cacert.pem:/usr/local/etc/php/cacert.pem:ro
+    cap_add:
+      - SYS_PTRACE
+    networks:
+      - default
+
+  mysql:
+    image: mysql:${MYSQL_VERSION}
+    restart: always
+    ports:
+      - "${MYSQL_HOST_PORT}:3306"
+    volumes:
+      - ${MYSQL_CONF_FILE}:/etc/mysql/mysql.conf.d/mysqld.cnf
+      - ${MYSQL_DATA_DIR}:/var/lib/mysql/:rw
+    networks:
+      - default
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD}"
+
+  clickhouse:
+    image: yandex/clickhouse-server
+    restart: always
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+      - "9009:9009"            
+    volumes:
+      - ./conf/clickhouse/config.xml:/etc/clickhouse-server/config.xml:rw
+      - ./conf/clickhouse/users.xml:/etc/clickhouse-server/users.xml:rw
+      - ./data/clickhouse:/var/lib/clickhouse:rw
+    networks:
+      - default
+
+  redis:
+    image: redis:${REDIS_VERSION}
+    restart: always
+    ports:
+      - "${REDIS_HOST_PORT}:6379"
+    volumes:
+      - ${REDIS_CONF_FILE}:/etc/redis.conf:ro
+      - ${REDIS_DATA_DIR}:/data/:rw
+    entrypoint: [ "redis-server", "/etc/redis.conf" ]
+    networks:
+      - default
+
+  rabbitmq:
+    image: rabbitmq:${RABBITMQ_VERSION}
+    restart: always
+    ports:
+      - "${RABBITMQ_HOST_PORT}:5672"
+      - "${RABBITMQ_MANAGE_HOST_PORT}:15672"
+    hostname: myRabbitmq
+    environment:
+      - "RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}"
+      - "RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}"
+    networks:
+      - default
+
+  mongo:
+    image: mongo
+    restart: always
+    ports:
+      - "${MONGO_HOST_PORT}:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: "${MONGO_INITDB_ROOT_USERNAME}"
+      MONGO_INITDB_ROOT_PASSWORD: "${MONGO_INITDB_ROOT_PASSWORD}"
+    networks:
+      - default
+
+  mongo-express:
+    image: mongo-express
+    restart: always
+    ports:
+      - "${MONGO_EXPRESS_HOST_PORT}:8081"
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: "${ME_CONFIG_MONGODB_ADMINUSERNAME}"
+      ME_CONFIG_MONGODB_ADMINPASSWORD: "${ME_CONFIG_MONGODB_ADMINPASSWORD}"
+    networks:
+      - default
+
+  elasticsearch:
+    image: elasticsearch:${ELASTICSEARCH_VERSION}
+    restart: always
+    volumes:
+      - ./data/elasticsearch/plugins:/usr/share/elasticsearch/plugins
+      - ./data/elasticsearch/data:/usr/share/elasticsearch/data
+    environment:
+      - "discovery.type=single-node"
+      - "ES_JAVA_OPTS=-Xms64m -Xmx128m"
+    ports:
+      - "${ELASTICSEARCH_HTTP_PORT}:9200"
+      - "${ELASTICSEARCH_TCP_PORT}:9300"
+    networks:
+      - default
+
+  logstash:
+    image: logstash:6.8.13
+    volumes:
+      - ./conf/logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+      - ./log/:/data/logs/
+    depends_on:
+      - elasticsearch
+    ports:
+      - 4560:4560
+    networks:
+      - default
+
+  kibana:
+    image: kibana:${KIBANA_VERSION}
+    restart: always
+    volumes:
+      - ./conf/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml
+    environment:
+      - "elasticsearch.hosts=http://elasticsearch:9200"
+    depends_on:
+      - elasticsearch
+    ports:
+      - "${KIBANA_HTTP_PORT}:5601"
+    networks:
+      - default
+
+  zookeeper:
+    image: wurstmeister/zookeeper
+    ports:
+      - "2181:2181"
+    networks:
+      - default
+
+  kafka:
+    image: wurstmeister/kafka
+    ports:
+      - "9092:9092"
+    environment:
+      TZ: CST-8
+      KAFKA_ADVERTISED_HOST_NAME: localhost
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # 非必须，设置
+      KAFKA_MESSAGE_MAX_BYTES: 20000000
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_ADVERTISED_PORT: 9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_LISTENERS: PLAINTEXT://:9092
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx256m"
+    depends_on:
+      - zookeeper
+    volumes:
+      - ./data/kafka:/kafka
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - default
+
+  kafka-manager:
+    image: sheepkiller/kafka-manager
+    ports:
+      - 9020:9000
+    environment:
+      ZK_HOSTS: zookeeper:2181
+    depends_on:
+      - zookeeper
+      - kafka
+    networks:
+      - default
+
+  gitea:
+    image: gitea/gitea:latest
+    restart: always
+    volumes:
+      - ./data/gitea:/data
+    ports:
+      - "2222:22"
+    networks:
+      - default
+
+  portainer:
+    image: portainer/portainer-ce:2.5.1-alpine
+    restart: always
+    ports:
+      - "9090:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/portainer:/data
+    networks:
+      - default
+
+networks:
+  default:
